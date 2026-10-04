@@ -31,3 +31,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Python: herramientas de fixture y de gate
+__pycache__/
+*.pyc
+
+# binarios construidos
+/bin/
