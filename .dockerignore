@@ -1,0 +1,9 @@
+.git
+.gitignore
+testdata
+tools
+scripts
+tasks
+README.md
+Dockerfile
+.dockerignore
