@@ -98,41 +98,81 @@ escribe el script que toda la proyecto va a correr en cada commit.
 
 ---
 
-## Paso 1: andamiaje
+## Paso 1: andamiaje — HECHO
 
 **Descripción:** `go.mod` con Go ≥ 1.22 y `CGO_ENABLED=0`, endpoint `GET /health`,
 configuración por variables de entorno, y Dockerfile multi-etapa que corre como usuario
 no-root. Es el cimiento del que cuelgan todos los pasos siguientes: Go no compila sin
 esto.
 
+> **Decisiones de diseño** (por qué esta forma y no otra):
+> - `config.Load()` es la **única** API pública del paquete. Una versión anterior
+>   exponía `LoadFrom(Lookup)` sólo para poder testear; Go ya tiene `t.Setenv`, así que
+>   esa superficie sobraba. Los tests usan la función real contra el entorno real.
+> - `internal/server` **no importa `internal/config`**: recibe su propio `Options`
+>   (`Addr`, `ReadTimeout`, `WriteTimeout`) y `cmd/server` hace la traducción. Sólo el
+>   composition root conoce las tres capas.
+> - Todo tunable numérico es `int64`, porque es lo que exigen `http.MaxBytesReader`,
+>   `io.LimitReader` y `semaphore.NewWeighted`. Así `config` tiene **un** helper de
+>   enteros en vez de uno genérico con conversión.
+> - El primer ajuste inválido corta la carga y el error **nombra la variable**: el
+>   despliegue falla al arrancar, no en el primer request.
+> - `Run` deja **una sola** goroutine y el canal de resultado tiene `cap 1`, así que
+>   nunca queda bloqueada esperando que alguien lea. Si `Shutdown` agota el grace con un
+>   request colgado, `stop` fuerza el cierre con `Close()`: nada queda vivo.
+
 **Acceptance criteria:**
-- [ ] `go.mod` declara `go 1.22` (o superior) y el árbol compila con `CGO_ENABLED=0`
-- [ ] `GET /health` devuelve `200` con un JSON mínimo y responde en < 5 ms
-- [ ] Config por env: `PORT`, `MAX_BODY_BYTES`, `MAX_INFLIGHT`, `MAX_INFLATE_BYTES`,
+- [x] `go.mod` declara `go 1.22` (o superior) y el árbol compila con `CGO_ENABLED=0`
+- [x] `GET /health` devuelve `200` con un JSON mínimo y responde en < 5 ms
+- [x] Config por env: `PORT`, `MAX_BODY_BYTES`, `MAX_INFLIGHT`, `MAX_INFLATE_BYTES`,
       `READ_TIMEOUT`, `WRITE_TIMEOUT` — con defaults sensatos y sin variablesREQUIRED
-- [ ] Dockerfile multi-etapa: build con toolchain, runtime sin toolchain, `USER`
-      no-root, y la imagen final no contiene el código fuente
-- [ ] `go vet ./...` limpio
+- [x] Dockerfile multi-etapa: build con toolchain, runtime sin toolchain, `USER`
+      non-root, y la imagen final no contiene el código fuente
+- [x] `go vet ./...` limpio
 
 **Verificación:**
-- [ ] Tests pass: `go test ./...`
-- [ ] Build succeeds: `CGO_ENABLED=0 go build ./... && go vet ./...`
-- [ ] Manual check: `go run ./cmd/server &` + `curl -w '%{time_total}' localhost:PORT/health`
-      < 5 ms; `docker build .` y `docker run` devuelven 200 desde el healthcheck
+- [x] Tests pass: `go test ./...` → **34 tests, OK** (17 `config`, 6 `httpapi`,
+      11 `server`), sin omitidos; `go test -race` en 3/3 paquetes limpio; `-count=3`
+      sin flakiness
+- [x] Build succeeds: `CGO_ENABLED=0 go build -trimpath ./...` → ELF **statically
+      linked**; `go vet ./...` y `gofmt -l .` limpios; `go list -deps` sin dependencias
+      externas (sólo stdlib)
+- [x] Manual check: binario en `PORT=18090` → `curl -w '%{time_total}' /health` entre
+      **0,32 ms y 0,96 ms** en 10 llamadas (criterio < 5 ms); `404` en ruta inexistente,
+      `405` en `POST /health`; `SIGTERM` apaga limpio y sin escribir nada en el log
+- [x] Manual check: `docker build` → **13,3 MB**, `User=nonroot:nonroot`, `/health` 200
+      dentro del contenedor, **RSS 1,5 MiB** (tope 512 MB), y `docker export` confirma
+      **0 archivos `.go`, sin `/src`, sin `go.mod`**
+- [x] Config inválida verificada con el binario real: `MAX_INFLIGHT=0` →
+      `es menor que el mínimo 1`, `PORT=70000` → `excede el máximo 65535`, exit 1
+
+**Defaults** (resuelven los puntos 4, 5 y 6 de `plan.md`):
+
+| Variable | Default | Por qué |
+|---|---|---|
+| `PORT` | `8080` | Puerto interno; Traefik publica el externo |
+| `MAX_BODY_BYTES` | `16777216` (16 MiB) | El PDF de la cátedra ronda 5,2 MB |
+| `MAX_INFLATE_BYTES` | `67108864` (64 MiB) | El fixture descomprime 26,8 MB |
+| `MAX_INFLIGHT` | `1` | 1 réplica = 1 CPU: más concurrencia sólo agrega cola |
+| `READ_TIMEOUT` | `30s` | Subir 5 MB no necesita más |
+| `WRITE_TIMEOUT` | `35s` | **Mayor que el `-timeout 30s` de Vegeta**, a propósito |
+
+`WRITE_TIMEOUT` es el único número sin medir: depende de Vegeta (paso 12).
 
 **Dependencies:** None (desbloquea todo lo demás)
 
-**Files likely touched:**
-- `go.mod`
-- `cmd/server/main.go`
-- `internal/config/config.go`
-- `internal/httpapi/health.go`
-- `Dockerfile`
-- `.dockerignore`
+**Files touched:**
+- `go.mod`, `cmd/server/main.go` (33 líneas)
+- `internal/config/config.go` (109) + `config_test.go` (231)
+- `internal/httpapi/httpapi.go` (21) + `health_test.go` (85)
+- `internal/server/server.go` (72) + `server_test.go` (232) + `stop_test.go` (56)
+- `Dockerfile`, `.dockerignore`
 
-**Estimated scope:** Medium: 3-5 files
+**Estimated scope:** Medio: 10 archivos (más que los 3-5 estimados: los tests son la
+mitad del trabajo)
 
-**Commit:** `operacion(andamiaje): go.mod, health, config por env y dockerfile no-root.#(1)`
+**Commit (sin commitear, pendiente de revisión):** `operacion(andamiaje): go.mod, health, config por env y dockerfile no-root.#(1)`
+
 
 ---
 

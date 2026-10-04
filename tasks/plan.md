@@ -185,7 +185,7 @@ Verificación de que el fixture no pierde nada: la verdad de referencia
 
 ### Fase 1 — Bloque A: el extractor
 
-- [ ] Paso 1: andamiaje (`go.mod`, `CGO_ENABLED=0`, `/health`, config por env, Dockerfile multi-etapa no-root)
+- [x] Paso 1: andamiaje (`go.mod`, `CGO_ENABLED=0`, `/health`, config por env, Dockerfile multi-etapa no-root)
 - [ ] Paso 2: capa de objetos PDF (lexer → `xref` → `trailer` → `Root` → page tree)
 - [ ] Paso 3: tokenizador del content stream — **stopping point técnico**
 - [ ] Paso 4: fuentes y CMaps (`ToUnicode`, cache por referencia de objeto)
@@ -234,7 +234,9 @@ Se completa en cada paso. Todo delta va acá antes del commit (regla de trabajo 
 |---|---|---|---|---|---|
 | 0 | fixture: páginas · streams Flate · descomprimido | — | 250 · 1.417 · 26,8 MB | — | **100,00 %** (pdftotext vs verdad de referencia) |
 | 0 | sensibilidad del gate | — | lineal: 90 %→90,00 · 80 %→80,00 · 60 %→60,00 | — | — |
-| 1 | `/health` latencia | — | — | — | n/a |
+| 1 | `/health` latencia (binario real, 10 llamadas) | — | **0,32–0,96 ms** | — | n/a |
+| 1 | RSS del contenedor | — | **1,5 MiB** (tope 512 MB) | — | n/a |
+| 1 | imagen final | — | **13,3 MB** · `nonroot` · **0** archivos `.go` | — | n/a |
 | 2 | `BenchmarkExtract` ms/op · allocs/op | — | — | — | — |
 | 3 | `BenchmarkExtract` ms/op · allocs/op | — | — | — | — |
 | 4 | palabras coincidentes % | — | — | — | — |
@@ -283,14 +285,16 @@ Referencias contra las que comparar (cátedra / implementación previa):
    "Go puro, sin librerías de PDF de terceros". Mi lectura: `klauspost/compress` no es
    una librería de PDF, así que entraría en el paso 6 si el perfil lo justifica. ¿Se
    acepta o el proyecto exige stdlib estricto?
-4. **¿Cuál es el límite de tamaño de body para el 413?** El fixture pesa 2,5 MB; el PDF
-   de la cátedra pesa 5,2 MB. Propongo 16 MB para que un PDF grande real no rebote.
-5. **¿`maxInFlight` por réplica?** Con 1 CPU, 1 request en vuelo por réplica (5 en total)
-   es lo correcto: más concurrencia sólo agrega thrash y presión de memoria. ¿Se
-   confirma `1` como default?
-6. **¿El timeout del server debería ser 30 s para calzar con `-timeout 30s` de
-   Vegeta?** Si el server corta antes, el timeout se cuenta como error del cliente y no
-   como comportamiento del servicio.
+4. **~~¿Límite de tamaño de body para el 413?~~ Fijado en 16 MiB** (`MAX_BODY_BYTES`)
+   en el paso 1: el fixture pesa 2,5 MB y el PDF de la cátedra 5,2 MB. Sigue siendo un
+   default: se cambia por env sin recompilar.
+5. **~~¿`maxInFlight` por réplica?~~ Fijado en `1`** (`MAX_INFLIGHT`): con 1 CPU por
+   réplica, más de 1 request en vuelo sólo agrega latencia de cola y presión de memoria
+   (5 réplicas ⇒ 5 en vuelo en total).
+6. **Parcialmente resuelto en el paso 1:** `WRITE_TIMEOUT=35s` es **mayor** que el
+   `-timeout 30s` de Vegeta, que era la preocupación real — así un timeout del cliente
+   nunca se cuenta como fallo del servidor. `READ_TIMEOUT=30s` sigue provisional hasta
+   que Vegeta esté instalado y el paso 12 lo pueda medir.
 7. **~~¿Versión de `pdftotext` de referencia?~~ Registrada: 24.02.0.** Si cambia, hay que
    regenerar `testdata/ref.txt`.
 
